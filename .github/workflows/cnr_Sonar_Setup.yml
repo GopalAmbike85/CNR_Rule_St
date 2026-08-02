@@ -1,7 +1,19 @@
-# ─── cnr_Sonar_Setup.yml (v2) ───────────────────────────────────────────────
+# ─── cnr_Sonar_Setup.yml (v3) ───────────────────────────────────────────────
 # Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
-#           SonarQube (self-hosted) static analysis.
+#           SonarQube Cloud static analysis.
 # Date    : 02-08-2026
+#
+# UPDATE FROM v2: confirmed via account screenshot that this is SonarQube
+# Cloud (sonarcloud.io), Free plan, org "gopalambike85" - not self-hosted.
+#   - SONAR_HOST_URL secret should be set to exactly: https://sonarcloud.io
+#   - SONAR_TOKEN: generate from SonarQube Cloud > profile icon > My Account
+#     > Security tab > Generate Tokens
+#   - sonar.organization=gopalambike85 must be present in
+#     sonar-project.properties (SonarQube Cloud requires it; self-hosted
+#     SonarQube Server does not use this key)
+#   - Free plan confirmed (via Sonar's own docs) to support C/C++ (CFamily)
+#     analysis for private repos, so the build-wrapper steps below are
+#     expected to work without needing a paid upgrade.
 #
 # CHANGES FROM v1 (fixing CI job 91508895307 failure):
 #   1. Fixed build-wrapper extracted folder name: it is
@@ -27,8 +39,8 @@
 #      and scanner, but Sonar will skip CFamily-specific rules.
 #
 # REQUIRED GitHub secrets (Settings > Secrets and variables > Actions):
-#   SONAR_HOST_URL  -> e.g. https://sonarqube.yourcompany.com
-#   SONAR_TOKEN     -> a SonarQube user/project token with "Execute Analysis" permission
+#   SONAR_HOST_URL  -> https://sonarcloud.io (fixed value for SonarQube Cloud)
+#   SONAR_TOKEN     -> token generated from My Account > Security in SonarQube Cloud
 #
 # Place this file at: .github/workflows/cnr_Sonar_Setup.yml
 
