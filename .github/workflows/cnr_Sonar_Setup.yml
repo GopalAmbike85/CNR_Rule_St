@@ -1,48 +1,30 @@
-# ─── cnr_Sonar_Setup.yml (v3) ───────────────────────────────────────────────
+# ─── cnr_Sonar_Setup.yml (v4) ───────────────────────────────────────────────
 # Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
 #           SonarQube Cloud static analysis.
 # Date    : 02-08-2026
 #
-# UPDATE FROM v2: confirmed via account screenshot that this is SonarQube
-# Cloud (sonarcloud.io), Free plan, org "gopalambike85" - not self-hosted.
-#   - SONAR_HOST_URL secret should be set to exactly: https://sonarcloud.io
-#   - SONAR_TOKEN: generate from SonarQube Cloud > profile icon > My Account
-#     > Security tab > Generate Tokens
-#   - sonar.organization=gopalambike85 must be present in
-#     sonar-project.properties (SonarQube Cloud requires it; self-hosted
-#     SonarQube Server does not use this key)
-#   - Free plan confirmed (via Sonar's own docs) to support C/C++ (CFamily)
-#     analysis for private repos, so the build-wrapper steps below are
-#     expected to work without needing a paid upgrade.
+# MAJOR CHANGE FROM v3: replaced the manual "curl the build-wrapper zip"
+# steps with SonarSource's OFFICIAL GitHub Actions:
+#   - SonarSource/sonarqube-scan-action/install-build-wrapper@v8.2.0
+#   - SonarSource/sonarqube-scan-action@v8.2.0
+# This is the cause of the "command not found: build-wrapper-linux-x86-64"
+# failure in v3: manually curling the zip from SonarQube Cloud is known to
+# be fragile (confirmed via Sonar's own community forum, cases of
+# "not a zip file" errors on that same download URL). The official actions
+# handle this download/extraction correctly and are actively maintained by
+# SonarSource, source: https://github.com/SonarSource/sonarqube-scan-action
+# Version v8.2.0 confirmed as latest on GitHub Marketplace as of this date.
 #
-# CHANGES FROM v1 (fixing CI job 91508895307 failure):
-#   1. Fixed build-wrapper extracted folder name: it is
-#      "build-wrapper-linux-x86-64", not "build-wrapper-linux-x86" as v1
-#      had it. This caused a later "command not found" for the wrapper.
-#   2. Added an explicit secrets-check step so a missing SONAR_HOST_URL or
-#      SONAR_TOKEN fails immediately with a clear message, instead of curl
-#      failing cryptically with "URL rejected: No host part in the URL".
-#   3. Skip the Sonar download/scan steps on pull requests from forked
-#      repos, since GitHub does not expose secrets to those workflow runs.
-#   4. Used curl -fLs (fail on HTTP errors, follow redirects, silent) so
-#      download failures surface clearly instead of silently saving an
-#      error page as the zip file.
+# REQUIRED GitHub secret (Settings > Secrets and variables > Actions):
+#   SONAR_TOKEN -> token generated from SonarQube Cloud > My Account > Security
+#   (SONAR_HOST_URL is NOT needed for SonarQube Cloud, only for self-hosted
+#   SonarQube Server - confirmed from the official action's own docs)
 #
-# ASSUMPTIONS (please confirm, not verified against your actual repo):
+# ASSUMPTIONS (please confirm against your actual repo):
 #   1. Project subfolder inside the repo is "CNR-Motor-Driver-1.0"
-#      (based on your local path D:\CNR\GithubGA\CNR_Rule_St\CNR-Motor-Driver-1.0)
-#   2. CMake preset name is "Debug" (matches CMakePresets.json you shared)
-#   3. Toolchain file cmake/gcc-arm-none-eabi.cmake exists inside the project
-#      folder and correctly points to an ARM GCC toolchain.
-#   4. C/C++ (CFamily) analysis needs SonarQube Developer Edition or higher.
-#      Until that license is active, this workflow will still run the build
-#      and scanner, but Sonar will skip CFamily-specific rules.
-#
-# REQUIRED GitHub secrets (Settings > Secrets and variables > Actions):
-#   SONAR_HOST_URL  -> https://sonarcloud.io (fixed value for SonarQube Cloud)
-#   SONAR_TOKEN     -> token generated from My Account > Security in SonarQube Cloud
-#
-# Place this file at: .github/workflows/cnr_Sonar_Setup.yml
+#   2. CMake preset name is "Debug"
+#   3. sonar-project.properties (in CNR-Motor-Driver-1.0/) has
+#      sonar.organization=gopalambike85 and sonar.projectKey=cnr-motor-driver
 
 name: CNR Motor Driver - SonarQube Analysis
 
@@ -52,14 +34,15 @@ on:
     paths:
       - 'CNR-Motor-Driver-1.0/**'
   pull_request:
+    types: [ opened, synchronize, reopened ]
     branches: [ main, develop ]
     paths:
       - 'CNR-Motor-Driver-1.0/**'
-  workflow_dispatch: {}   # allows manual trigger from the Actions tab
+  workflow_dispatch: {}
 
 env:
   PROJECT_DIR: CNR-Motor-Driver-1.0
-  BUILD_WRAPPER_OUT_DIR: build-wrapper-output
+  BUILD_WRAPPER_OUT_DIR: build-wrapper-output   # relative to PROJECT_DIR, not repo root
 
 jobs:
   build-and-analyze:
@@ -68,9 +51,9 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
-          fetch-depth: 0   # full history improves SonarQube blame/new-code analysis
+          fetch-depth: 0   # full history improves SonarQube's new-code analysis
           submodules: recursive  # remove this line if MCSDK/Drivers are not submodules
 
       - name: Install build tools (CMake, Ninja, ARM GCC toolchain)
@@ -81,59 +64,39 @@ jobs:
       - name: Verify ARM toolchain
         run: arm-none-eabi-gcc --version
 
-      - name: Check Sonar secrets are set
+      - name: Check SONAR_TOKEN is set
         run: |
-          if [ -z "${{ secrets.SONAR_HOST_URL }}" ] || [ -z "${{ secrets.SONAR_TOKEN }}" ]; then
-            echo "ERROR: SONAR_HOST_URL or SONAR_TOKEN secret is not set."
-            echo "Add both under Settings > Secrets and variables > Actions."
+          if [ -z "${{ secrets.SONAR_TOKEN }}" ]; then
+            echo "ERROR: SONAR_TOKEN secret is not set."
+            echo "Add it under Settings > Secrets and variables > Actions."
             exit 1
           fi
 
-      - name: Download SonarQube Build Wrapper
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        run: |
-          curl -fLs -o build-wrapper-linux-x86.zip \
-            "${{ secrets.SONAR_HOST_URL }}/static/cpp/build-wrapper-linux-x86.zip"
-          unzip -q build-wrapper-linux-x86.zip
-          # NOTE: the zip extracts to "build-wrapper-linux-x86-64", not
-          # "build-wrapper-linux-x86" (v1 bug, fixed here).
-          echo "$GITHUB_WORKSPACE/build-wrapper-linux-x86-64" >> "$GITHUB_PATH"
-
-      - name: Download SonarScanner CLI
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        run: |
-          curl -fLs -o sonar-scanner.zip \
-            "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-6.2.1.4610-linux-x64.zip"
-          unzip -q sonar-scanner.zip
-          echo "$GITHUB_WORKSPACE/sonar-scanner-6.2.1.4610-linux-x64/bin" >> "$GITHUB_PATH"
+      - name: Install SonarQube Build Wrapper
+        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v8.2.0
 
       - name: Configure CMake (Debug preset)
         working-directory: ${{ env.PROJECT_DIR }}
         run: cmake --preset Debug
 
       - name: Build wrapped with Sonar build-wrapper
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           build-wrapper-linux-x86-64 \
             --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} \
             cmake --build --preset Debug
 
-      - name: Run SonarQube scan
-        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
-        working-directory: ${{ env.PROJECT_DIR }}
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v8.2.0
         env:
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        run: |
-          sonar-scanner \
-            -Dsonar.host.url="$SONAR_HOST_URL" \
-            -Dsonar.token="$SONAR_TOKEN"
+        with:
+          projectBaseDir: ${{ env.PROJECT_DIR }}
+          args: >
+            --define "sonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json"
 
       # Optional: fail the pipeline if quality gate fails, once you're ready
-      # to enforce it. Requires sonar.qualitygate.wait=true in
-      # sonar-project.properties, and the SonarQube webhook configured to
-      # notify GitHub Actions.
+      # to enforce it. Requires sonar.qualitygate.wait=true.
       # - name: SonarQube Quality Gate check
       #   uses: sonarsource/sonarqube-quality-gate-action@master
       #   env:
