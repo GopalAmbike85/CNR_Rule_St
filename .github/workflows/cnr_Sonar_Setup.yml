@@ -1,7 +1,20 @@
-# ─── cnr_Sonar_Setup.yml (v1) ───────────────────────────────────────────────
+# ─── cnr_Sonar_Setup.yml (v2) ───────────────────────────────────────────────
 # Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
 #           SonarQube (self-hosted) static analysis.
 # Date    : 02-08-2026
+#
+# CHANGES FROM v1 (fixing CI job 91508895307 failure):
+#   1. Fixed build-wrapper extracted folder name: it is
+#      "build-wrapper-linux-x86-64", not "build-wrapper-linux-x86" as v1
+#      had it. This caused a later "command not found" for the wrapper.
+#   2. Added an explicit secrets-check step so a missing SONAR_HOST_URL or
+#      SONAR_TOKEN fails immediately with a clear message, instead of curl
+#      failing cryptically with "URL rejected: No host part in the URL".
+#   3. Skip the Sonar download/scan steps on pull requests from forked
+#      repos, since GitHub does not expose secrets to those workflow runs.
+#   4. Used curl -fLs (fail on HTTP errors, follow redirects, silent) so
+#      download failures surface clearly instead of silently saving an
+#      error page as the zip file.
 #
 # ASSUMPTIONS (please confirm, not verified against your actual repo):
 #   1. Project subfolder inside the repo is "CNR-Motor-Driver-1.0"
@@ -56,16 +69,28 @@ jobs:
       - name: Verify ARM toolchain
         run: arm-none-eabi-gcc --version
 
-      - name: Download SonarQube Build Wrapper
+      - name: Check Sonar secrets are set
         run: |
-          curl -sSLo build-wrapper-linux-x86.zip \
+          if [ -z "${{ secrets.SONAR_HOST_URL }}" ] || [ -z "${{ secrets.SONAR_TOKEN }}" ]; then
+            echo "ERROR: SONAR_HOST_URL or SONAR_TOKEN secret is not set."
+            echo "Add both under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Download SonarQube Build Wrapper
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
+        run: |
+          curl -fLs -o build-wrapper-linux-x86.zip \
             "${{ secrets.SONAR_HOST_URL }}/static/cpp/build-wrapper-linux-x86.zip"
           unzip -q build-wrapper-linux-x86.zip
-          echo "$GITHUB_WORKSPACE/build-wrapper-linux-x86" >> "$GITHUB_PATH"
+          # NOTE: the zip extracts to "build-wrapper-linux-x86-64", not
+          # "build-wrapper-linux-x86" (v1 bug, fixed here).
+          echo "$GITHUB_WORKSPACE/build-wrapper-linux-x86-64" >> "$GITHUB_PATH"
 
       - name: Download SonarScanner CLI
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         run: |
-          curl -sSLo sonar-scanner.zip \
+          curl -fLs -o sonar-scanner.zip \
             "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-6.2.1.4610-linux-x64.zip"
           unzip -q sonar-scanner.zip
           echo "$GITHUB_WORKSPACE/sonar-scanner-6.2.1.4610-linux-x64/bin" >> "$GITHUB_PATH"
@@ -75,6 +100,7 @@ jobs:
         run: cmake --preset Debug
 
       - name: Build wrapped with Sonar build-wrapper
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         working-directory: ${{ env.PROJECT_DIR }}
         run: |
           build-wrapper-linux-x86-64 \
@@ -82,6 +108,7 @@ jobs:
             cmake --build --preset Debug
 
       - name: Run SonarQube scan
+        if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
         working-directory: ${{ env.PROJECT_DIR }}
         env:
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
@@ -99,6 +126,3 @@ jobs:
       #   uses: sonarsource/sonarqube-quality-gate-action@master
       #   env:
       #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-
-
-      
