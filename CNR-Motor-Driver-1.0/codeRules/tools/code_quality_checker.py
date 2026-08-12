@@ -10,6 +10,11 @@ Usage:
 --base-ref enables the git-diff-based rules (vendor file modified, CubeMX
 USER CODE boundary, telemetry math drift prompt). Without it, only the
 static rules run (function naming, include guards, forbidden includes).
+
+v2 (12-08-2026): CD-1/CD-3 now skip files that are newly added relative to
+--base-ref (see git_added_files) - a wholesale add of vendor/CubeMX files
+(e.g. the first PR bringing the project into an empty main) is not a
+"modification" and was previously flagging every line of every such file.
 """
 
 import argparse
@@ -245,6 +250,26 @@ def git_changed_files(root, base_ref):
     return [root / p for p in out.stdout.splitlines() if p]
 
 
+def git_added_files(root, base_ref):
+    """Files that did not exist in base_ref at all (--diff-filter=A).
+
+    CD-1/CD-3 exist to catch hand edits to vendor/CubeMX files that already
+    existed - a file being added for the first time (e.g. the initial PR
+    that brings the whole vendor SDK into the repo) is not a "modification"
+    of anything, there is nothing prior to have preserved. Without this,
+    every line of every newly-added vendor file registers as "changed" and
+    both rules fire on a wholesale add, which is a false positive."""
+    try:
+        out = subprocess.run(
+            ["git", "diff", "--relative", "--name-only", "--diff-filter=A",
+             f"{base_ref}...HEAD", "--", "Src", "Inc"],
+            cwd=root, capture_output=True, text=True, check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return set()
+    return {root / p for p in out.stdout.splitlines() if p}
+
+
 def git_changed_line_numbers(root, base_ref, path):
     """Line numbers changed in `path` relative to base_ref, via unified diff hunks."""
     try:
@@ -265,8 +290,9 @@ def git_changed_line_numbers(root, base_ref, path):
 
 def check_vendor_immutability(root, base_ref):
     findings = []
+    added = git_added_files(root, base_ref)
     for f in git_changed_files(root, base_ref):
-        if not f.exists() or not is_vendor_file(f):
+        if not f.exists() or not is_vendor_file(f) or f in added:
             continue
         user_code_lines = user_code_marker_ranges(f)
         changed = git_changed_line_numbers(root, base_ref, f)
@@ -299,8 +325,9 @@ def user_code_marker_ranges(path):
 def check_cubemx_boundary(root, base_ref):
     findings = []
     user_code_files = {f for f in find_user_code_files(root)}
+    added = git_added_files(root, base_ref)
     for f in git_changed_files(root, base_ref):
-        if f not in user_code_files or not f.exists():
+        if f not in user_code_files or not f.exists() or f in added:
             continue
         allowed = user_code_marker_ranges(f)
         changed = git_changed_line_numbers(root, base_ref, f)

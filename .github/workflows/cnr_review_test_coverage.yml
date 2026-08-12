@@ -137,10 +137,15 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}
         run: ctest --test-dir unit_tests/build --output-on-failure
 
-      # Filtered to the module actually under test - the Unity library and
-      # test file itself are not instrumented (see unit_tests/CMakeLists.txt,
-      # --coverage is only applied to the motor_telemetry_math_tests target's
-      # own sources) and are excluded here as a second line of defense.
+      # --filter is REQUIRED, not just a nice-to-have: unit_tests/CMakeLists.txt
+      # applies --coverage to the motor_telemetry_math_tests target, which
+      # includes test/test_motor_telemetry_math.c itself (only the fetched
+      # Unity static-library target is left uninstrumented). Without this
+      # filter, gcovr counts Unity's setUp/tearDown/test_*/main as "covered
+      # code" too - confirmed by an actual CI run where an unanchored filter
+      # regex let "test_motor_telemetry_math.c" slip through and inflated the
+      # function count from 5 to 27. The (^|/) anchor requires the match to
+      # start at a path boundary so "test_motor_telemetry_math.c" is excluded.
       # Per gcovr's own out-of-source-CMake-build example (doc/examples/
       # example_cmake.sh): "gcovr -r <src-root> <build-dir>" - the build dir
       # is passed as the search-path positional argument, not via
@@ -151,7 +156,7 @@ jobs:
         run: |
           mkdir -p unit_tests/build/coverage
           gcovr --root . unit_tests/build \
-            --filter '.*motor_telemetry_math\.(c|h)$' \
+            --filter '(^|/)motor_telemetry_math\.(c|h)$' \
             --xml unit_tests/build/coverage/coverage-cobertura.xml \
             --sonarqube unit_tests/build/coverage/coverage-sonarqube.xml \
             --html-details unit_tests/build/coverage/index.html \
