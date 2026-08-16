@@ -1,7 +1,20 @@
-# ─── cnr_Sonar_Setup.yml (v5) ───────────────────────────────────────────────
+# ─── cnr_Sonar_Setup.yml (v6) ───────────────────────────────────────────────
 # Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
 #           SonarQube Cloud static analysis.
 # Date    : 16-08-2026
+#
+# CHANGE FROM v5: wired up sonar.coverageReportPaths. Previously this job
+# never generated or passed any coverage data to the scanner, so SonarQube
+# Cloud always reported 0% coverage on new code (the separate
+# "SonarCloud Code Analysis" check's Quality Gate failure) - not because
+# coverage was actually zero, but because it was never measured here. The
+# host-build unit tests + gcovr steps already existed in the OTHER workflow
+# (cnr_review_test_coverage.yml's unit-tests-coverage job), but that job
+# runs on a separate runner with no shared filesystem, so its output never
+# reached this job. Duplicated the same steps here instead of trying to
+# share artifacts across two independent workflow files (cross-workflow
+# artifact sharing requires the GitHub REST API and correlating run IDs -
+# far more fragile than just re-running the same cheap host-build steps).
 #
 # CHANGE FROM v4: fixed sonar.cfamily.compile-commands path. CI run on PR #1
 # (PoC -> main) failed with:
@@ -10,6 +23,8 @@
 # The scanner resolves sonar.cfamily.compile-commands relative to its own
 # working directory (repo root), not relative to projectBaseDir - so the
 # PROJECT_DIR prefix was missing. See the "SonarQube Scan" step below.
+# Same repo-root-relative resolution applies to sonar.coverageReportPaths
+# below, so it also gets the PROJECT_DIR prefix.
 #
 # MAJOR CHANGE FROM v3: replaced the manual "curl the build-wrapper zip"
 # steps with SonarSource's OFFICIAL GitHub Actions:
@@ -51,6 +66,7 @@ on:
 env:
   PROJECT_DIR: CNR-Motor-Driver-1.0
   BUILD_WRAPPER_OUT_DIR: build-wrapper-output   # relative to PROJECT_DIR, not repo root
+  COVERAGE_REPORT: unit_tests/build/coverage/coverage-sonarqube.xml   # relative to PROJECT_DIR, not repo root
 
 jobs:
   build-and-analyze:
@@ -71,6 +87,41 @@ jobs:
 
       - name: Verify ARM toolchain
         run: arm-none-eabi-gcc --version
+
+      # ─── Host-build unit tests + coverage, so the scan below has real
+      # coverage data instead of reporting 0% for lack of any. Mirrors the
+      # same steps as cnr_review_test_coverage.yml's unit-tests-coverage
+      # job (see that file for the filter-regex rationale) - duplicated
+      # here since that job runs in a separate workflow/runner and its
+      # output can't be reached from this one.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install gcovr
+        run: pip install gcovr==8.6
+
+      - name: Configure unit tests (host build, fetches Unity)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: cmake -S unit_tests -B unit_tests/build -G Ninja
+
+      - name: Build unit tests
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: cmake --build unit_tests/build
+
+      - name: Run unit tests
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: ctest --test-dir unit_tests/build --output-on-failure
+
+      - name: Generate coverage report (for SonarQube)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          mkdir -p unit_tests/build/coverage
+          gcovr --root . unit_tests/build \
+            --filter '(.*/)?motor_telemetry_math\.(c|h)$' \
+            --sonarqube ${{ env.COVERAGE_REPORT }} \
+            --print-summary
 
       - name: Check SONAR_TOKEN is set
         run: |
@@ -100,16 +151,16 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           projectBaseDir: ${{ env.PROJECT_DIR }}
-          # sonar.cfamily.compile-commands is resolved relative to the
-          # scanner's actual working directory (repo root), NOT relative to
-          # projectBaseDir - confirmed from the CI failure log: the scanner
-          # looked for "<repo-root>/build-wrapper-output/compile_commands.json"
-          # even though projectBaseDir is set to PROJECT_DIR. The build
-          # wrapper actually wrote it to "<PROJECT_DIR>/build-wrapper-output/"
-          # (its own working-directory step runs inside PROJECT_DIR), so the
-          # PROJECT_DIR prefix must be included here explicitly.
+          # Both paths below are resolved relative to the scanner's actual
+          # working directory (repo root), NOT relative to projectBaseDir -
+          # confirmed from the CI failure log for compile-commands: the
+          # scanner looked for "<repo-root>/build-wrapper-output/..." even
+          # though projectBaseDir is set to PROJECT_DIR. Both steps that
+          # produce these files run with working-directory: PROJECT_DIR, so
+          # the PROJECT_DIR prefix must be added explicitly here for both.
           args: >
             --define "sonar.cfamily.compile-commands=${{ env.PROJECT_DIR }}/${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json"
+            --define "sonar.coverageReportPaths=${{ env.PROJECT_DIR }}/${{ env.COVERAGE_REPORT }}"
 
       # Optional: fail the pipeline if quality gate fails, once you're ready
       # to enforce it. Requires sonar.qualitygate.wait=true.
