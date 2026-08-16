@@ -1,0 +1,92 @@
+# ─── cnr_manual_tag_build.yml (v1) ──────────────────────────────────────────
+# Purpose : On-demand, version-tagged build of CNR-Motor-Driver-1.0, producing
+#           a downloadable .elf/.bin/.hex artifact named after the branch+SHA.
+# Date    : 16-08-2026
+#
+# This is a deliberately lightweight replacement for the reference
+# ManualBuild-Tag.yml (which targets a different project entirely: i.MXRT1050
+# + Yocto + Docker + a self-hosted Azure VM runner + an external OscBP
+# library checkout). None of that applies to this STM32G4 bare-metal
+# CMake/Ninja build, so it is not reproduced here - only the useful ideas
+# (workflow_dispatch trigger, branch+SHA version string, tagged artifact
+# upload) were carried over, built on top of the ARM-GCC toolchain this repo
+# already uses in cnr_Sonar_Setup.yml.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: CNR Motor Driver - Manual Tagged Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_preset:
+        description: 'CMake preset to build'
+        required: false
+        default: 'Release'
+        type: choice
+        options:
+          - Release
+          - Debug
+
+env:
+  PROJECT_DIR: CNR-Motor-Driver-1.0
+
+jobs:
+  tagged-build:
+    name: Tagged Build (${{ inputs.build_preset }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # need full history for a stable short SHA / branch name
+
+      - name: Install build tools (CMake, Ninja, ARM GCC toolchain)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi
+
+      - name: Verify ARM toolchain
+        run: arm-none-eabi-gcc --version
+
+      - name: Compute version string (branch + short SHA)
+        id: version
+        run: |
+          S_SHA=$(git rev-parse --short HEAD)
+          FULL_BR_NAME="${{ github.ref_name }}"
+          TRUNC_BR_NAME="${FULL_BR_NAME:0:20}"
+          FULL_VER="${TRUNC_BR_NAME}-${S_SHA}"
+          echo "GIT_VER=$FULL_VER" >> "$GITHUB_ENV"
+          echo "Version: $FULL_VER"
+
+      - name: Configure CMake (${{ inputs.build_preset }} preset)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: cmake --preset ${{ inputs.build_preset }}
+
+      - name: Build
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: cmake --build --preset ${{ inputs.build_preset }}
+
+      - name: Generate .bin / .hex from the .elf
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          ELF="build/${{ inputs.build_preset }}/CNR-MOTOR-DRIVER.elf"
+          if [ ! -f "$ELF" ]; then
+            echo "ERROR: expected ELF not found at $ELF"
+            ls -R "build/${{ inputs.build_preset }}"
+            exit 1
+          fi
+          arm-none-eabi-objcopy -O binary "$ELF" "build/${{ inputs.build_preset }}/CNR-MOTOR-DRIVER.bin"
+          arm-none-eabi-objcopy -O ihex   "$ELF" "build/${{ inputs.build_preset }}/CNR-MOTOR-DRIVER.hex"
+
+      - name: Upload tagged build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CNR-Motor-Driver-${{ inputs.build_preset }}-${{ env.GIT_VER }}
+          path: |
+            ${{ env.PROJECT_DIR }}/build/${{ inputs.build_preset }}/CNR-MOTOR-DRIVER.elf
+            ${{ env.PROJECT_DIR }}/build/${{ inputs.build_preset }}/CNR-MOTOR-DRIVER.bin
+            ${{ env.PROJECT_DIR }}/build/${{ inputs.build_preset }}/CNR-MOTOR-DRIVER.hex
+          retention-days: 30
