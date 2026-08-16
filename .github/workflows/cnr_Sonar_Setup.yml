@@ -1,7 +1,19 @@
-# ─── cnr_Sonar_Setup.yml (v7) ───────────────────────────────────────────────
+# ─── cnr_Sonar_Setup.yml (v8) ───────────────────────────────────────────────
 # Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
 #           SonarQube Cloud static analysis.
 # Date    : 16-08-2026
+#
+# CHANGE FROM v7: exclude vendor/CubeMX-generated files from the coverage
+# requirement via sonar.coverage.exclusions. Without this, the Quality
+# Gate's "Coverage on New Code" condition counts ST's Motor Control SDK
+# (47 of 58 files) and CubeMX-generated glue against the coverage bar, even
+# though codeRules/CodeQualityRules.md (Rule 0) already puts that code out
+# of scope for this project's own conventions - it's not code we're
+# supposed to unit-test or even hand-edit. Only motor_telemetry_math.c/h
+# are fully custom and expected to carry real coverage. The exclusion list
+# is computed dynamically in a new step below (same "everything except the
+# known custom files" logic, not a hardcoded list) so it can't silently go
+# stale the way a hand-maintained list would.
 #
 # CHANGE FROM v6: v6 added the PROJECT_DIR prefix to sonar.coverageReportPaths
 # by analogy with compile-commands, but that was wrong - CI failed with:
@@ -132,6 +144,40 @@ jobs:
             --sonarqube ${{ env.COVERAGE_REPORT }} \
             --print-summary
 
+      # Compute which files should count toward the coverage requirement:
+      # only the files this project fully owns (currently just
+      # motor_telemetry_math.c/h). Everything else under Src/ and Inc/ is
+      # either ST's Motor Control SDK vendor code or CubeMX-generated glue,
+      # already documented as out of this project's testing scope in
+      # codeRules/CodeQualityRules.md's Scope section. Computed here
+      # instead of hardcoded, so a new custom module added later doesn't
+      # silently stay excluded - update CUSTOM_FILES below when that
+      # happens (same caveat as CodeQualityRules.md's own vendor grep:
+      # "do not hardcode this list as permanent").
+      - name: Compute coverage exclusions (vendor + CubeMX-generated files)
+        id: covexcl
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          CUSTOM_FILES="motor_telemetry_math.c motor_telemetry_math.h"
+
+          EXCLUSIONS=""
+          for f in $(find Src Inc -maxdepth 1 -type f \( -name '*.c' -o -name '*.h' \) | sort); do
+            base="$(basename "$f")"
+            is_custom=false
+            for c in $CUSTOM_FILES; do
+              [ "$base" = "$c" ] && is_custom=true
+            done
+            if [ "$is_custom" = false ]; then
+              EXCLUSIONS="${EXCLUSIONS}**/${base},"
+            fi
+          done
+          EXCLUSIONS="${EXCLUSIONS%,}"   # strip trailing comma
+
+          echo "exclusions=$EXCLUSIONS" >> "$GITHUB_OUTPUT"
+          echo "Coverage requirement applies only to: $CUSTOM_FILES"
+          echo "Excluded from coverage requirement ($(echo "$EXCLUSIONS" | tr ',' '\n' | wc -l) files):"
+          echo "$EXCLUSIONS" | tr ',' '\n'
+
       - name: Check SONAR_TOKEN is set
         run: |
           if [ -z "${{ secrets.SONAR_TOKEN }}" ]; then
@@ -175,9 +221,15 @@ jobs:
           # PROJECT_DIR - adding the PROJECT_DIR prefix here doubled it up
           # to ".../CNR-Motor-Driver-1.0/CNR-Motor-Driver-1.0/unit_tests/..."
           # and failed to parse. Must be passed WITHOUT the prefix.
+          #
+          # sonar.coverage.exclusions uses the same **/<filename> glob style
+          # as sonar.exclusions in sonar-project.properties, so it's
+          # base-agnostic - computed in the "Compute coverage exclusions"
+          # step above.
           args: >
             --define "sonar.cfamily.compile-commands=${{ env.PROJECT_DIR }}/${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json"
             --define "sonar.coverageReportPaths=${{ env.COVERAGE_REPORT }}"
+            --define "sonar.coverage.exclusions=${{ steps.covexcl.outputs.exclusions }}"
 
       # Optional: fail the pipeline if quality gate fails, once you're ready
       # to enforce it. Requires sonar.qualitygate.wait=true.
