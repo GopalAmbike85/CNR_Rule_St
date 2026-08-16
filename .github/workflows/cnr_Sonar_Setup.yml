@@ -28,14 +28,17 @@
 
 name: CNR Motor Driver - SonarQube Analysis
 
+# TEMPORARY: "PoC" added to both branch lists below to validate the PR/CI
+# process against the PoC branch before pointing it at main. Remove "PoC"
+# once validation is done (see D:\CNR\ClaudeTracking for the removal note).
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, PoC ]
     paths:
       - 'CNR-Motor-Driver-1.0/**'
   pull_request:
     types: [ opened, synchronize, reopened ]
-    branches: [ main, develop ]
+    branches: [ main, develop, PoC ]
     paths:
       - 'CNR-Motor-Driver-1.0/**'
   workflow_dispatch: {}
