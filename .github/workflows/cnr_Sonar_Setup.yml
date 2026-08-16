@@ -1,7 +1,16 @@
-# ─── cnr_Sonar_Setup.yml (v6) ───────────────────────────────────────────────
+# ─── cnr_Sonar_Setup.yml (v7) ───────────────────────────────────────────────
 # Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
 #           SonarQube Cloud static analysis.
 # Date    : 16-08-2026
+#
+# CHANGE FROM v6: v6 added the PROJECT_DIR prefix to sonar.coverageReportPaths
+# by analogy with compile-commands, but that was wrong - CI failed with:
+#   Error during parsing of the generic coverage report
+#   '.../CNR-Motor-Driver-1.0/CNR-Motor-Driver-1.0/unit_tests/build/coverage/coverage-sonarqube.xml'
+# (note the doubled "CNR-Motor-Driver-1.0"). Unlike compile-commands,
+# coverageReportPaths resolves relative to projectBaseDir (already
+# PROJECT_DIR), so the extra prefix duplicated it. Removed the prefix for
+# this property only - see the "SonarQube Scan" step's args below.
 #
 # CHANGE FROM v5: wired up sonar.coverageReportPaths. Previously this job
 # never generated or passed any coverage data to the scanner, so SonarQube
@@ -151,16 +160,24 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           projectBaseDir: ${{ env.PROJECT_DIR }}
-          # Both paths below are resolved relative to the scanner's actual
-          # working directory (repo root), NOT relative to projectBaseDir -
-          # confirmed from the CI failure log for compile-commands: the
-          # scanner looked for "<repo-root>/build-wrapper-output/..." even
-          # though projectBaseDir is set to PROJECT_DIR. Both steps that
-          # produce these files run with working-directory: PROJECT_DIR, so
-          # the PROJECT_DIR prefix must be added explicitly here for both.
+          # These two --define paths resolve DIFFERENTLY, confirmed from two
+          # separate CI failure logs - do not "make them consistent":
+          #
+          # sonar.cfamily.compile-commands resolves relative to the
+          # scanner's actual working directory (repo root), NOT relative to
+          # projectBaseDir. The scanner looked for
+          # "<repo-root>/build-wrapper-output/..." even with projectBaseDir
+          # set to PROJECT_DIR, so it needs the PROJECT_DIR prefix added
+          # explicitly.
+          #
+          # sonar.coverageReportPaths (Generic Coverage Report sensor)
+          # resolves relative to projectBaseDir itself, which is ALREADY
+          # PROJECT_DIR - adding the PROJECT_DIR prefix here doubled it up
+          # to ".../CNR-Motor-Driver-1.0/CNR-Motor-Driver-1.0/unit_tests/..."
+          # and failed to parse. Must be passed WITHOUT the prefix.
           args: >
             --define "sonar.cfamily.compile-commands=${{ env.PROJECT_DIR }}/${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json"
-            --define "sonar.coverageReportPaths=${{ env.PROJECT_DIR }}/${{ env.COVERAGE_REPORT }}"
+            --define "sonar.coverageReportPaths=${{ env.COVERAGE_REPORT }}"
 
       # Optional: fail the pipeline if quality gate fails, once you're ready
       # to enforce it. Requires sonar.qualitygate.wait=true.
