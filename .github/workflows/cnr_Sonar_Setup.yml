@@ -1,7 +1,15 @@
-# ─── cnr_Sonar_Setup.yml (v4) ───────────────────────────────────────────────
+# ─── cnr_Sonar_Setup.yml (v5) ───────────────────────────────────────────────
 # Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
 #           SonarQube Cloud static analysis.
-# Date    : 02-08-2026
+# Date    : 16-08-2026
+#
+# CHANGE FROM v4: fixed sonar.cfamily.compile-commands path. CI run on PR #1
+# (PoC -> main) failed with:
+#   java.nio.file.NoSuchFileException:
+#   /home/runner/work/CNR_Rule_St/CNR_Rule_St/build-wrapper-output/compile_commands.json
+# The scanner resolves sonar.cfamily.compile-commands relative to its own
+# working directory (repo root), not relative to projectBaseDir - so the
+# PROJECT_DIR prefix was missing. See the "SonarQube Scan" step below.
 #
 # MAJOR CHANGE FROM v3: replaced the manual "curl the build-wrapper zip"
 # steps with SonarSource's OFFICIAL GitHub Actions:
@@ -92,8 +100,16 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         with:
           projectBaseDir: ${{ env.PROJECT_DIR }}
+          # sonar.cfamily.compile-commands is resolved relative to the
+          # scanner's actual working directory (repo root), NOT relative to
+          # projectBaseDir - confirmed from the CI failure log: the scanner
+          # looked for "<repo-root>/build-wrapper-output/compile_commands.json"
+          # even though projectBaseDir is set to PROJECT_DIR. The build
+          # wrapper actually wrote it to "<PROJECT_DIR>/build-wrapper-output/"
+          # (its own working-directory step runs inside PROJECT_DIR), so the
+          # PROJECT_DIR prefix must be included here explicitly.
           args: >
-            --define "sonar.cfamily.compile-commands=${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json"
+            --define "sonar.cfamily.compile-commands=${{ env.PROJECT_DIR }}/${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json"
 
       # Optional: fail the pipeline if quality gate fails, once you're ready
       # to enforce it. Requires sonar.qualitygate.wait=true.
