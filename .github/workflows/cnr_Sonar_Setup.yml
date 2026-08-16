@@ -30,12 +30,12 @@ name: CNR Motor Driver - SonarQube Analysis
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [ main, Development ]
     paths:
       - 'CNR-Motor-Driver-1.0/**'
   pull_request:
     types: [ opened, synchronize, reopened ]
-    branches: [ main, develop ]
+    branches: [ main, Development ]
     paths:
       - 'CNR-Motor-Driver-1.0/**'
   workflow_dispatch: {}
