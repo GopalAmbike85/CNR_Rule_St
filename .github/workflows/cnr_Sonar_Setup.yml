@@ -1,7 +1,17 @@
-# ─── cnr_Sonar_Setup.yml (v12) ──────────────────────────────────────────────
+# ─── cnr_Sonar_Setup.yml (v13) ──────────────────────────────────────────────
 # Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
 #           SonarQube Cloud static analysis.
 # Date    : 19-08-2026
+#
+# CHANGE FROM v12: run #30 succeeded with the fixed compilation database,
+# but reported "Converted 0 issue(s), 0 distinct rule(s)." Verified via the
+# SonarQube Cloud dashboard (Coverage 88.9% on motor_telemetry_math.c
+# confirms the pipeline itself works) that this wasn't an import failure -
+# but with no .clang-tidy config or -checks flag, clang-tidy's bare
+# defaults are minimal enough that "0 issues" could also just mean "barely
+# checked anything." Added an explicit -checks= allowlist so this
+# actually runs the bug-finding categories that motivated adding
+# clang-tidy in the first place. See the "Run clang-tidy" step below.
 #
 # CHANGE FROM v11: run #25 (first to get past the apt-mirror fix) reached
 # the clang-tidy step and failed with "No compilation database found ...
@@ -286,11 +296,27 @@ jobs:
       # both clang-tidy itself and the converter script - report-only
       # until proven reliable, same posture as the code-review job in
       # cnr_review_test_coverage.yml when its own new rules first shipped.
+      #
+      # Added explicit -checks= (run #30 succeeded but reported "Converted
+      # 0 issue(s)" - with no .clang-tidy config or -checks flag in this
+      # repo, that could mean the code is clean OR that clang-tidy's bare
+      # default check set is too minimal to say anything meaningful either
+      # way). Builds an explicit allowlist rather than trusting the
+      # default: "-*" disables everything, then re-enables real bug-finding
+      # categories (bugprone-, cert-, clang-analyzer-, misc-, performance-)
+      # plus the one specific readability check this project actually
+      # wants (const-correctness on pointer params). Deliberately excludes
+      # broad readability-*/modernize-* - modernize-* is almost entirely
+      # C++-oriented (irrelevant to this .c file) and broad readability-*
+      # is subjective/stylistic and would conflict with the naming
+      # conventions code_quality_checker.py already enforces for this repo.
       - name: Run clang-tidy (custom files only) and convert to Sonar format
         working-directory: ${{ env.PROJECT_DIR }}
         continue-on-error: true
         run: |
-          clang-tidy -p unit_tests/build Src/motor_telemetry_math.c \
+          clang-tidy -p unit_tests/build \
+            -checks='-*,bugprone-*,cert-*,clang-analyzer-*,misc-*,performance-*,readability-non-const-parameter' \
+            Src/motor_telemetry_math.c \
             > clang-tidy-output.txt 2>&1 || true
           cat clang-tidy-output.txt
           python3 codeRules/tools/convert_clang_tidy_to_sonar.py \
