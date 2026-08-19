@@ -1,7 +1,17 @@
-# ─── cnr_Sonar_Setup.yml (v10) ──────────────────────────────────────────────
+# ─── cnr_Sonar_Setup.yml (v11) ──────────────────────────────────────────────
 # Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
 #           SonarQube Cloud static analysis.
 # Date    : 19-08-2026
+#
+# CHANGE FROM v10: runs #22-24 all spent minutes stuck retrying GitHub's
+# runner mirror during "Install build tools" (one run got cancelled while
+# still on this step). Confirmed from the actual log - "Get:1
+# file:/etc/apt/apt-mirrors.txt Mirrorlist" - the runner's apt tries
+# azure.archive.ubuntu.com first via that exact file, retries it several
+# times, then falls back to the public archive.ubuntu.com (which works).
+# Rewrote /etc/apt/apt-mirrors.txt to skip straight to the public archive,
+# plus added Acquire::Retries/Timeout flags and DEBIAN_FRONTEND=noninteractive
+# as defense-in-depth. See the "Install build tools" step below.
 #
 # CHANGE FROM v9: v9's first real CI run (#22) failed with the exact same
 # "doubled path" shape as the v6 coverage bug:
@@ -122,10 +132,28 @@ jobs:
           fetch-depth: 0   # full history improves SonarQube's new-code analysis
           submodules: recursive  # remove this line if MCSDK/Drivers are not submodules
 
+      # Added v11: runs #22-24 all spent several minutes (one got cancelled
+      # while still on this exact step) stuck retrying GitHub's own runner
+      # mirror. Confirmed from the actual log line "Get:1
+      # file:/etc/apt/apt-mirrors.txt Mirrorlist" - the runner's apt is
+      # configured to try azure.archive.ubuntu.com FIRST via that mirrorlist
+      # file, and repeatedly re-negotiates with it (several "Ign:" retries)
+      # before falling back to the public archive.ubuntu.com, which does
+      # work. This rewrites that exact mirrorlist file to skip the flaky
+      # regional mirror entirely and go straight to the known-good public
+      # archive, instead of just tolerating the slow fallback. The
+      # Acquire::Retries/Timeout flags are a second line of defense in case
+      # a different mirror misbehaves in the future.
       - name: Install build tools (CMake, Ninja, ARM GCC toolchain, clang-tidy)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi clang-tidy
+          echo "http://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt
+          sudo apt-get update \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=15 \
+            -o Acquire::https::Timeout=15
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            -o Acquire::Retries=3 \
+            cmake ninja-build gcc-arm-none-eabi clang-tidy
 
       - name: Verify ARM toolchain
         run: arm-none-eabi-gcc --version
