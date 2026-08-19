@@ -39,6 +39,24 @@ doc fetch had called this field conditionally optional (only required
 if severity/type were absent); that turned out to be wrong, or at least
 not how SonarQube Cloud's actual validator enforces it - impacts alone
 was not sufficient. Trust the real validator error over the docs.
+
+v3 (19-08-2026): dropped startColumn from textRange (now startLine only
+- a whole-line range). Confirmed via run #34's real scanner crash:
+  java.lang.IllegalArgumentException: Start pointer [line=319,
+  lineOffset=9] should be before end pointer [line=319, lineOffset=9]
+Traced to Src/aspep.c line 319, which is a lone "        {" - 9
+characters, column 9 is the LAST character on the line. SonarQube's
+external-issue importer widens a column-only point into a valid range
+by advancing the end column by one; here that would run past
+end-of-line, so it clamps back to the same column as the start,
+producing an exact start==end pointer, which its own range validator
+then rejects. This never surfaced with clang-tidy scoped to just
+motor_telemetry_math.c; across the ~50 files now in scope (see the
+workflow's v15 change), a short line ending in a single brace is
+common and effectively guaranteed to recur. Whole-line ranges (no
+column) sidestep this entire class of edge case rather than trying to
+special-case "column at end of line" - the Generic Issue Import format
+supports startLine alone (endLine/columns are all optional).
 """
 import json
 import re
@@ -111,9 +129,12 @@ def convert(text: str) -> dict:
             "primaryLocation": {
                 "message": m.group("message"),
                 "filePath": m.group("file"),
+                # startColumn deliberately omitted - see v3 changelog note
+                # above (a column pointing at the last character of a
+                # short line crashes SonarQube's range widening). Whole
+                # line is precise enough to locate the finding.
                 "textRange": {
                     "startLine": int(m.group("line")),
-                    "startColumn": int(m.group("col")),
                 },
             },
         })
