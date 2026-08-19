@@ -29,6 +29,14 @@ project(cnr_motor_driver_unit_tests C)
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
+# Added 19-08-2026: needed so clang-tidy (in cnr_Sonar_Setup.yml) has a real
+# compile database for motor_telemetry_math.c. The ARM firmware's own build
+# never compiles this file (see the header comment above - it's host-only),
+# so its build-wrapper output has no entry for it regardless of path; this
+# host build is the only one that actually compiles it, so it's the only
+# place a usable compile_commands.json for it can come from.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 include(FetchContent)
 
 FetchContent_Declare(

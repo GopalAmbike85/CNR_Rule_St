@@ -1,7 +1,18 @@
-# ─── cnr_Sonar_Setup.yml (v11) ──────────────────────────────────────────────
+# ─── cnr_Sonar_Setup.yml (v12) ──────────────────────────────────────────────
 # Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
 #           SonarQube Cloud static analysis.
 # Date    : 19-08-2026
+#
+# CHANGE FROM v11: run #25 (first to get past the apt-mirror fix) reached
+# the clang-tidy step and failed with "No compilation database found ...
+# or any parent directory" for motor_telemetry_math.c. Root cause: that
+# file is host-only (see unit_tests/CMakeLists.txt) and is never compiled
+# by the ARM firmware build build-wrapper wraps, so it can never appear in
+# build-wrapper-output/compile_commands.json. Repointed clang-tidy's -p at
+# unit_tests/build instead (the host build a few steps above, which
+# actually compiles this file) and added CMAKE_EXPORT_COMPILE_COMMANDS ON
+# to unit_tests/CMakeLists.txt so that directory has a compile database to
+# find. See the "Run clang-tidy" step below for the full reasoning.
 #
 # CHANGE FROM v10: runs #22-24 all spent minutes stuck retrying GitHub's
 # runner mirror during "Install build tools" (one run got cancelled while
@@ -249,13 +260,28 @@ jobs:
             --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} \
             cmake --build --preset Debug
 
-      # Added v9: clang-tidy against ONLY the fully-custom file(s) this
-      # project owns (same CUSTOM_FILES scope as the coverage-exclusions
-      # step above) - running it over the vendor MCSDK tree would flood
-      # this with findings about code we're not supposed to touch anyway
-      # (see codeRules/CodeDesignRules.md Rule 1, vendor files immutable).
-      # -p points clang-tidy at the build-wrapper's compile_commands.json
-      # so it knows this file's real include paths/defines.
+      # Added v9, FIXED v12: clang-tidy against ONLY the fully-custom
+      # file(s) this project owns (same CUSTOM_FILES scope as the
+      # coverage-exclusions step above) - running it over the vendor MCSDK
+      # tree would flood this with findings about code we're not supposed
+      # to touch anyway (see codeRules/CodeDesignRules.md Rule 1, vendor
+      # files immutable).
+      #
+      # v9 pointed -p at the ARM build-wrapper's output
+      # (build-wrapper-output) and failed: "No compilation database found
+      # ... or any parent directory" -> motor_telemetry_math.c is
+      # host-only (see unit_tests/CMakeLists.txt's own header) and is
+      # NEVER compiled as part of the ARM firmware build that build-wrapper
+      # wraps, so it can never have an entry there regardless of path.
+      # Fixed by pointing -p at unit_tests/build instead - the host build
+      # a few steps above (added for coverage) actually compiles this
+      # file, and now emits compile_commands.json too (added
+      # CMAKE_EXPORT_COMPILE_COMMANDS ON to unit_tests/CMakeLists.txt).
+      # This is also architecturally more correct, not just a workaround:
+      # clang-tidy is clang-based and would likely misinterpret
+      # arm-none-eabi-gcc-specific flags/builtins even if the file WERE in
+      # that database.
+      #
       # continue-on-error: this is a first run against real output for
       # both clang-tidy itself and the converter script - report-only
       # until proven reliable, same posture as the code-review job in
@@ -264,7 +290,7 @@ jobs:
         working-directory: ${{ env.PROJECT_DIR }}
         continue-on-error: true
         run: |
-          clang-tidy -p ${{ env.BUILD_WRAPPER_OUT_DIR }} Src/motor_telemetry_math.c \
+          clang-tidy -p unit_tests/build Src/motor_telemetry_math.c \
             > clang-tidy-output.txt 2>&1 || true
           cat clang-tidy-output.txt
           python3 codeRules/tools/convert_clang_tidy_to_sonar.py \
