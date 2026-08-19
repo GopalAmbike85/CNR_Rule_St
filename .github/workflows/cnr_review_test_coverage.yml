@@ -1,0 +1,226 @@
+# ─── cnr_review_test_coverage.yml (v4) ──────────────────────────────────────
+# Purpose : Two independent CI jobs for CNR-Motor-Driver-1.0:
+#             1. code-review        - deterministic rule checker
+#                                      (codeRules/tools/code_quality_checker.py)
+#             2. unit-tests-coverage - host-build Unity tests + gcov/gcovr
+#                                      coverage report
+# Date    : 19-08-2026
+#
+# CHANGE FROM v3: bumped actions/upload-artifact v4 -> v7 in both upload
+# steps - same Node.js 20 deprecation warning as setup-python (v1 fix
+# below), this time from upload-artifact's own manifest. Confirmed v7
+# targets node24 and has no breaking input/output changes for basic
+# name/path usage (checked v5/v6/v7 release notes - the only breaking
+# change across all three is the Node runtime itself).
+#
+# CHANGE FROM v2: this job's own "Install build tools" step hit the same
+# azure.archive.ubuntu.com apt-mirror hang diagnosed and fixed in
+# cnr_Sonar_Setup.yml (v11) - confirmed by this job sitting well past its
+# usual ~35-40s runtime. Applied the identical fix here: rewrite
+# /etc/apt/apt-mirrors.txt to skip the flaky regional mirror, plus explicit
+# Acquire::Retries/Timeout flags and DEBIAN_FRONTEND=noninteractive.
+#
+# CHANGE FROM v1: bumped actions/setup-python v5 -> v7 in both jobs (v5's
+# manifest targets Node.js 20, which GitHub is deprecating; v6+ already
+# targets Node 24 natively, confirmed no breaking input/output changes for
+# this file's python-version-only usage).
+#
+# Scope: this workflow does NOT touch the existing ARM cross-build / SonarQube
+# workflow (cnr_Sonar_Setup.yml). It is self-contained: code review runs
+# python3 directly against the repo, and unit tests build+run entirely on the
+# runner (no ARM toolchain needed, see unit_tests/CMakeLists.txt).
+#
+# Coverage is REPORT-ONLY by design (no minimum-% gate) - confirmed with repo
+# owner on 12-08-2026, since there is currently only one test file
+# (test_motor_telemetry_math.c) and a hard gate would be premature.
+#
+# The code-review job DOES gate the build: code_quality_checker.py exits 1 if
+# it finds any "Blocking" severity finding (see CodeQualityRules.md).
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: CNR Motor Driver - Code Review, Unit Tests & Coverage
+
+on:
+  push:
+    branches: [ main, Development ]
+    paths:
+      - 'CNR-Motor-Driver-1.0/**'
+  pull_request:
+    types: [ opened, synchronize, reopened ]
+    branches: [ main, Development ]
+    paths:
+      - 'CNR-Motor-Driver-1.0/**'
+  workflow_dispatch: {}
+
+env:
+  PROJECT_DIR: CNR-Motor-Driver-1.0
+
+jobs:
+  code-review:
+    name: Code Review (deterministic rule checker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # full history needed for the git-diff-based rules (CD-1/CD-3/CD-5)
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+
+      # On a PR, diff against the PR's actual base branch. On a direct push,
+      # diff against the commit before the push. If neither resolves to a
+      # commit the runner has (e.g. very first push), the checker's own git
+      # diff call fails safe: it prints a WARNING and skips the diff-based
+      # rules rather than erroring out (see code_quality_checker.py).
+      - name: Determine base ref for diff-based rules
+        id: baseref
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "ref=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.event.before }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Empty on workflow_dispatch (no "before" commit to diff against) -
+      # in that case run static rules only, same as a bare invocation.
+      - name: Run code quality checker
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          if [ -n "${{ steps.baseref.outputs.ref }}" ]; then
+            bash codeRules/agents/run-code-quality.sh --base-ref "${{ steps.baseref.outputs.ref }}"
+          else
+            bash codeRules/agents/run-code-quality.sh
+          fi
+
+      - name: Publish report to job summary
+        if: always()
+        run: |
+          {
+            echo "## Code Quality Report"
+            echo ""
+            cat "${{ env.PROJECT_DIR }}/codeRules/reports/CodeQualityReport.md"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload code quality report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: code-quality-report
+          path: |
+            ${{ env.PROJECT_DIR }}/codeRules/reports/CodeQualityReport.md
+            ${{ env.PROJECT_DIR }}/codeRules/reports/CodeQualityErrors.xml
+          retention-days: 30
+
+  unit-tests-coverage:
+    name: Unit Tests & Coverage (host build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      # actions/setup-python provides a hosted (non-distro) Python, so the
+      # plain "pip install" below works without hitting Ubuntu 24.04's
+      # externally-managed-environment restriction on the system Python.
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.x'
+
+      # gcovr is installed via pip and pinned to a specific version rather
+      # than the apt package, since gcovr's CLI flags have changed across
+      # major versions (e.g. --object-directory / --sonarqube / --html-details
+      # were verified against gcovr 8.6 specifically) and Ubuntu's apt
+      # package version is not something this workflow controls.
+      #
+      # Added 19-08-2026: same apt-mirror hang fix as cnr_Sonar_Setup.yml
+      # (v11) - this job's own separate "apt-get update" hit the identical
+      # azure.archive.ubuntu.com flakiness (confirmed: this job was still
+      # "In progress" long after its usual ~35-40s runtime). Rewrites
+      # /etc/apt/apt-mirrors.txt to skip straight to the public archive,
+      # plus explicit retry/timeout flags and DEBIAN_FRONTEND=noninteractive.
+      - name: Install build tools (CMake, Ninja, gcovr)
+        run: |
+          echo "http://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt
+          sudo apt-get update \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=15 \
+            -o Acquire::https::Timeout=15
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            -o Acquire::Retries=3 \
+            cmake ninja-build
+          pip install gcovr==8.6
+
+      - name: Configure unit tests (host build, fetches Unity)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: cmake -S unit_tests -B unit_tests/build -G Ninja
+
+      - name: Build unit tests
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: cmake --build unit_tests/build
+
+      - name: Run unit tests
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: ctest --test-dir unit_tests/build --output-on-failure
+
+      # --filter is REQUIRED, not just a nice-to-have: unit_tests/CMakeLists.txt
+      # applies --coverage to the motor_telemetry_math_tests target, which
+      # includes test/test_motor_telemetry_math.c itself (only the fetched
+      # Unity static-library target is left uninstrumented). Without this
+      # filter, gcovr counts Unity's setUp/tearDown/test_*/main as "covered
+      # code" too - confirmed by an actual CI run where an unanchored filter
+      # regex let "test_motor_telemetry_math.c" slip through and inflated the
+      # function count from 5 to 27.
+      #
+      # gcovr's Filter.match() uses Python re.match() (anchored at the START
+      # of the relative path, not a full-string match, not an unanchored
+      # search - confirmed from gcovr's own filter.py source at tag 8.6).
+      # A bare "(^|/)name$" therefore does NOT match "Src/name" ((^|/) can
+      # only satisfy "/" at index 0, but "S" is there instead) - confirmed
+      # by a second CI run where that version filtered out every file,
+      # including the real one. "(.*/)?name$" is correct for match()
+      # semantics: the optional group consumes any directory prefix
+      # (including none), matched greedily so it stops right before the
+      # final "/", leaving the filename to match to the end anchor.
+      # Per gcovr's own out-of-source-CMake-build example (doc/examples/
+      # example_cmake.sh): "gcovr -r <src-root> <build-dir>" - the build dir
+      # is passed as the search-path positional argument, not via
+      # --object-directory (that flag is for a different, narrower case
+      # where gcovr's own working-directory detection needs overriding).
+      - name: Generate coverage report
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          mkdir -p unit_tests/build/coverage
+          gcovr --root . unit_tests/build \
+            --filter '(.*/)?motor_telemetry_math\.(c|h)$' \
+            --xml unit_tests/build/coverage/coverage-cobertura.xml \
+            --sonarqube unit_tests/build/coverage/coverage-sonarqube.xml \
+            --html-details unit_tests/build/coverage/index.html \
+            --print-summary | tee unit_tests/build/coverage/summary.txt
+
+      - name: Publish coverage summary to job summary
+        if: always()
+        run: |
+          {
+            echo "## Unit Test Coverage (motor_telemetry_math.c/.h)"
+            echo ""
+            echo '```'
+            cat "${{ env.PROJECT_DIR }}/unit_tests/build/coverage/summary.txt"
+            echo '```'
+            echo ""
+            echo "_Report-only: no minimum coverage threshold is enforced._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: unit-test-coverage-report
+          path: ${{ env.PROJECT_DIR }}/unit_tests/build/coverage/
+          retention-days: 30
