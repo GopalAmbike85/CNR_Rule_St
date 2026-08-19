@@ -1,0 +1,289 @@
+# ─── cnr_Sonar_Setup.yml (v9) ───────────────────────────────────────────────
+# Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
+#           SonarQube Cloud static analysis.
+# Date    : 19-08-2026
+#
+# CHANGE FROM v8: added clang-tidy, run only against motor_telemetry_math.c
+# (the one file this project fully owns - see codeRules/CodeQualityRules.md
+# Scope table). It covers checks code_quality_checker.py deliberately does
+# NOT attempt via plain regex (const-correctness, narrowing conversions,
+# unused return values - those need real type/data-flow analysis). Findings
+# are converted to SonarQube's Generic Issue Import Format via
+# codeRules/tools/convert_clang_tidy_to_sonar.py (self-tested against a
+# synthetic sample, schema cross-checked against two independently-fetched
+# Sonar doc pages) and surfaced via sonar.externalIssuesReportPaths.
+#
+# UNVERIFIED path-resolution assumption: this file's own history (see the
+# v4/v5/v6/v7 notes below) proves different --define properties resolve
+# relative to different base directories, and there's no way to know in
+# advance which convention sonar.externalIssuesReportPaths follows. Guessed
+# repo-root-relative (PROJECT_DIR-prefixed), matching compile-commands, as
+# the first attempt - if this run's log shows a "file not found" for
+# clang-tidy-sonar.json, that error will say exactly what path SonarQube
+# actually looked for, the same way it already told us how to fix
+# compile-commands and coverageReportPaths in earlier versions.
+#
+# CHANGE FROM v7: exclude vendor/CubeMX-generated files from the coverage
+# requirement via sonar.coverage.exclusions. Without this, the Quality
+# Gate's "Coverage on New Code" condition counts ST's Motor Control SDK
+# (47 of 58 files) and CubeMX-generated glue against the coverage bar, even
+# though codeRules/CodeQualityRules.md (Rule 0) already puts that code out
+# of scope for this project's own conventions - it's not code we're
+# supposed to unit-test or even hand-edit. Only motor_telemetry_math.c/h
+# are fully custom and expected to carry real coverage. The exclusion list
+# is computed dynamically in a new step below (same "everything except the
+# known custom files" logic, not a hardcoded list) so it can't silently go
+# stale the way a hand-maintained list would.
+#
+# CHANGE FROM v6: v6 added the PROJECT_DIR prefix to sonar.coverageReportPaths
+# by analogy with compile-commands, but that was wrong - CI failed with:
+#   Error during parsing of the generic coverage report
+#   '.../CNR-Motor-Driver-1.0/CNR-Motor-Driver-1.0/unit_tests/build/coverage/coverage-sonarqube.xml'
+# (note the doubled "CNR-Motor-Driver-1.0"). Unlike compile-commands,
+# coverageReportPaths resolves relative to projectBaseDir (already
+# PROJECT_DIR), so the extra prefix duplicated it. Removed the prefix for
+# this property only - see the "SonarQube Scan" step's args below.
+#
+# CHANGE FROM v5: wired up sonar.coverageReportPaths. Previously this job
+# never generated or passed any coverage data to the scanner, so SonarQube
+# Cloud always reported 0% coverage on new code (the separate
+# "SonarCloud Code Analysis" check's Quality Gate failure) - not because
+# coverage was actually zero, but because it was never measured here. The
+# host-build unit tests + gcovr steps already existed in the OTHER workflow
+# (cnr_review_test_coverage.yml's unit-tests-coverage job), but that job
+# runs on a separate runner with no shared filesystem, so its output never
+# reached this job. Duplicated the same steps here instead of trying to
+# share artifacts across two independent workflow files (cross-workflow
+# artifact sharing requires the GitHub REST API and correlating run IDs -
+# far more fragile than just re-running the same cheap host-build steps).
+#
+# CHANGE FROM v4: fixed sonar.cfamily.compile-commands path. CI run on PR #1
+# (PoC -> main) failed with:
+#   java.nio.file.NoSuchFileException:
+#   /home/runner/work/CNR_Rule_St/CNR_Rule_St/build-wrapper-output/compile_commands.json
+# The scanner resolves sonar.cfamily.compile-commands relative to its own
+# working directory (repo root), not relative to projectBaseDir - so the
+# PROJECT_DIR prefix was missing. See the "SonarQube Scan" step below.
+# Same repo-root-relative resolution applies to sonar.coverageReportPaths
+# below, so it also gets the PROJECT_DIR prefix.
+#
+# MAJOR CHANGE FROM v3: replaced the manual "curl the build-wrapper zip"
+# steps with SonarSource's OFFICIAL GitHub Actions:
+#   - SonarSource/sonarqube-scan-action/install-build-wrapper@v8.2.0
+#   - SonarSource/sonarqube-scan-action@v8.2.0
+# This is the cause of the "command not found: build-wrapper-linux-x86-64"
+# failure in v3: manually curling the zip from SonarQube Cloud is known to
+# be fragile (confirmed via Sonar's own community forum, cases of
+# "not a zip file" errors on that same download URL). The official actions
+# handle this download/extraction correctly and are actively maintained by
+# SonarSource, source: https://github.com/SonarSource/sonarqube-scan-action
+# Version v8.2.0 confirmed as latest on GitHub Marketplace as of this date.
+#
+# REQUIRED GitHub secret (Settings > Secrets and variables > Actions):
+#   SONAR_TOKEN -> token generated from SonarQube Cloud > My Account > Security
+#   (SONAR_HOST_URL is NOT needed for SonarQube Cloud, only for self-hosted
+#   SonarQube Server - confirmed from the official action's own docs)
+#
+# ASSUMPTIONS (please confirm against your actual repo):
+#   1. Project subfolder inside the repo is "CNR-Motor-Driver-1.0"
+#   2. CMake preset name is "Debug"
+#   3. sonar-project.properties (in CNR-Motor-Driver-1.0/) has
+#      sonar.organization=gopalambike85 and sonar.projectKey=cnr-motor-driver
+
+name: CNR Motor Driver - SonarQube Analysis
+
+on:
+  push:
+    branches: [ main, Development ]
+    paths:
+      - 'CNR-Motor-Driver-1.0/**'
+  pull_request:
+    types: [ opened, synchronize, reopened ]
+    branches: [ main, Development ]
+    paths:
+      - 'CNR-Motor-Driver-1.0/**'
+  workflow_dispatch: {}
+
+env:
+  PROJECT_DIR: CNR-Motor-Driver-1.0
+  BUILD_WRAPPER_OUT_DIR: build-wrapper-output   # relative to PROJECT_DIR, not repo root
+  COVERAGE_REPORT: unit_tests/build/coverage/coverage-sonarqube.xml   # relative to PROJECT_DIR, not repo root
+  CLANG_TIDY_REPORT: clang-tidy-sonar.json   # relative to PROJECT_DIR, not repo root
+
+jobs:
+  build-and-analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # full history improves SonarQube's new-code analysis
+          submodules: recursive  # remove this line if MCSDK/Drivers are not submodules
+
+      - name: Install build tools (CMake, Ninja, ARM GCC toolchain, clang-tidy)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build gcc-arm-none-eabi clang-tidy
+
+      - name: Verify ARM toolchain
+        run: arm-none-eabi-gcc --version
+
+      # ─── Host-build unit tests + coverage, so the scan below has real
+      # coverage data instead of reporting 0% for lack of any. Mirrors the
+      # same steps as cnr_review_test_coverage.yml's unit-tests-coverage
+      # job (see that file for the filter-regex rationale) - duplicated
+      # here since that job runs in a separate workflow/runner and its
+      # output can't be reached from this one.
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install gcovr
+        run: pip install gcovr==8.6
+
+      - name: Configure unit tests (host build, fetches Unity)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: cmake -S unit_tests -B unit_tests/build -G Ninja
+
+      - name: Build unit tests
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: cmake --build unit_tests/build
+
+      - name: Run unit tests
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: ctest --test-dir unit_tests/build --output-on-failure
+
+      - name: Generate coverage report (for SonarQube)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          mkdir -p unit_tests/build/coverage
+          gcovr --root . unit_tests/build \
+            --filter '(.*/)?motor_telemetry_math\.(c|h)$' \
+            --sonarqube ${{ env.COVERAGE_REPORT }} \
+            --print-summary
+
+      # Compute which files should count toward the coverage requirement:
+      # only the files this project fully owns (currently just
+      # motor_telemetry_math.c/h). Everything else under Src/ and Inc/ is
+      # either ST's Motor Control SDK vendor code or CubeMX-generated glue,
+      # already documented as out of this project's testing scope in
+      # codeRules/CodeQualityRules.md's Scope section. Computed here
+      # instead of hardcoded, so a new custom module added later doesn't
+      # silently stay excluded - update CUSTOM_FILES below when that
+      # happens (same caveat as CodeQualityRules.md's own vendor grep:
+      # "do not hardcode this list as permanent").
+      - name: Compute coverage exclusions (vendor + CubeMX-generated files)
+        id: covexcl
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          CUSTOM_FILES="motor_telemetry_math.c motor_telemetry_math.h"
+
+          EXCLUSIONS=""
+          for f in $(find Src Inc -maxdepth 1 -type f \( -name '*.c' -o -name '*.h' \) | sort); do
+            base="$(basename "$f")"
+            is_custom=false
+            for c in $CUSTOM_FILES; do
+              [ "$base" = "$c" ] && is_custom=true
+            done
+            if [ "$is_custom" = false ]; then
+              EXCLUSIONS="${EXCLUSIONS}**/${base},"
+            fi
+          done
+          EXCLUSIONS="${EXCLUSIONS%,}"   # strip trailing comma
+
+          echo "exclusions=$EXCLUSIONS" >> "$GITHUB_OUTPUT"
+          echo "Coverage requirement applies only to: $CUSTOM_FILES"
+          echo "Excluded from coverage requirement ($(echo "$EXCLUSIONS" | tr ',' '\n' | wc -l) files):"
+          echo "$EXCLUSIONS" | tr ',' '\n'
+
+      - name: Check SONAR_TOKEN is set
+        run: |
+          if [ -z "${{ secrets.SONAR_TOKEN }}" ]; then
+            echo "ERROR: SONAR_TOKEN secret is not set."
+            echo "Add it under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Install SonarQube Build Wrapper
+        uses: SonarSource/sonarqube-scan-action/install-build-wrapper@v8.2.0
+
+      - name: Configure CMake (Debug preset)
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: cmake --preset Debug
+
+      - name: Build wrapped with Sonar build-wrapper
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          build-wrapper-linux-x86-64 \
+            --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} \
+            cmake --build --preset Debug
+
+      # Added v9: clang-tidy against ONLY the fully-custom file(s) this
+      # project owns (same CUSTOM_FILES scope as the coverage-exclusions
+      # step above) - running it over the vendor MCSDK tree would flood
+      # this with findings about code we're not supposed to touch anyway
+      # (see codeRules/CodeDesignRules.md Rule 1, vendor files immutable).
+      # -p points clang-tidy at the build-wrapper's compile_commands.json
+      # so it knows this file's real include paths/defines.
+      # continue-on-error: this is a first run against real output for
+      # both clang-tidy itself and the converter script - report-only
+      # until proven reliable, same posture as the code-review job in
+      # cnr_review_test_coverage.yml when its own new rules first shipped.
+      - name: Run clang-tidy (custom files only) and convert to Sonar format
+        working-directory: ${{ env.PROJECT_DIR }}
+        continue-on-error: true
+        run: |
+          clang-tidy -p ${{ env.BUILD_WRAPPER_OUT_DIR }} Src/motor_telemetry_math.c \
+            > clang-tidy-output.txt 2>&1 || true
+          cat clang-tidy-output.txt
+          python3 codeRules/tools/convert_clang_tidy_to_sonar.py \
+            < clang-tidy-output.txt > ${{ env.CLANG_TIDY_REPORT }}
+
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v8.2.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          projectBaseDir: ${{ env.PROJECT_DIR }}
+          # These paths resolve DIFFERENTLY, confirmed from real CI failure
+          # logs across earlier versions of this file - do not "make them
+          # consistent" without re-confirming against an actual run first:
+          #
+          # sonar.cfamily.compile-commands resolves relative to the
+          # scanner's actual working directory (repo root), NOT relative to
+          # projectBaseDir - needs the PROJECT_DIR prefix.
+          #
+          # sonar.coverageReportPaths (Generic Coverage Report sensor)
+          # resolves relative to projectBaseDir itself, which is ALREADY
+          # PROJECT_DIR - adding the PROJECT_DIR prefix here doubled it up
+          # and failed to parse. Must be passed WITHOUT the prefix.
+          #
+          # sonar.externalIssuesReportPaths: UNVERIFIED which convention
+          # this one follows - guessed repo-root-relative (PROJECT_DIR
+          # prefix) to match compile-commands, since both are consumed by
+          # the same cfamily analyzer rather than a separate sensor like
+          # coverage. If this run's log shows a file-not-found for
+          # clang-tidy-sonar.json, that error will state the exact path it
+          # looked for - fix by toggling the prefix based on that, the same
+          # way v5 and v6 were each fixed from a real failure log rather
+          # than guessed twice.
+          #
+          # sonar.coverage.exclusions uses the same **/<filename> glob style
+          # as sonar.exclusions in sonar-project.properties, so it's
+          # base-agnostic - computed in the "Compute coverage exclusions"
+          # step above.
+          args: >
+            --define "sonar.cfamily.compile-commands=${{ env.PROJECT_DIR }}/${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json"
+            --define "sonar.coverageReportPaths=${{ env.COVERAGE_REPORT }}"
+            --define "sonar.coverage.exclusions=${{ steps.covexcl.outputs.exclusions }}"
+            --define "sonar.externalIssuesReportPaths=${{ env.PROJECT_DIR }}/${{ env.CLANG_TIDY_REPORT }}"
+
+      # Optional: fail the pipeline if quality gate fails, once you're ready
+      # to enforce it. Requires sonar.qualitygate.wait=true.
+      # - name: SonarQube Quality Gate check
+      #   uses: sonarsource/sonarqube-quality-gate-action@master
+      #   env:
+      #     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
