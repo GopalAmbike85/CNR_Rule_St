@@ -1,7 +1,17 @@
-# ─── cnr_Sonar_Setup.yml (v9) ───────────────────────────────────────────────
+# ─── cnr_Sonar_Setup.yml (v10) ──────────────────────────────────────────────
 # Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
 #           SonarQube Cloud static analysis.
 # Date    : 19-08-2026
+#
+# CHANGE FROM v9: v9's first real CI run (#22) failed with the exact same
+# "doubled path" shape as the v6 coverage bug:
+#   NoSuchFileException: .../CNR-Motor-Driver-1.0/CNR-Motor-Driver-1.0/
+#   clang-tidy-sonar.json
+# v9 had guessed sonar.externalIssuesReportPaths follows compile-commands'
+# convention (repo-root-relative, needs PROJECT_DIR prefix) - wrong. It
+# actually follows coverageReportPaths' convention (relative to
+# projectBaseDir, already PROJECT_DIR). Prefix removed - see the
+# "SonarQube Scan" step's args below.
 #
 # CHANGE FROM v8: added clang-tidy, run only against motor_telemetry_math.c
 # (the one file this project fully owns - see codeRules/CodeQualityRules.md
@@ -12,16 +22,6 @@
 # codeRules/tools/convert_clang_tidy_to_sonar.py (self-tested against a
 # synthetic sample, schema cross-checked against two independently-fetched
 # Sonar doc pages) and surfaced via sonar.externalIssuesReportPaths.
-#
-# UNVERIFIED path-resolution assumption: this file's own history (see the
-# v4/v5/v6/v7 notes below) proves different --define properties resolve
-# relative to different base directories, and there's no way to know in
-# advance which convention sonar.externalIssuesReportPaths follows. Guessed
-# repo-root-relative (PROJECT_DIR-prefixed), matching compile-commands, as
-# the first attempt - if this run's log shows a "file not found" for
-# clang-tidy-sonar.json, that error will say exactly what path SonarQube
-# actually looked for, the same way it already told us how to fix
-# compile-commands and coverageReportPaths in earlier versions.
 #
 # CHANGE FROM v7: exclude vendor/CubeMX-generated files from the coverage
 # requirement via sonar.coverage.exclusions. Without this, the Quality
@@ -261,15 +261,15 @@ jobs:
           # PROJECT_DIR - adding the PROJECT_DIR prefix here doubled it up
           # and failed to parse. Must be passed WITHOUT the prefix.
           #
-          # sonar.externalIssuesReportPaths: UNVERIFIED which convention
-          # this one follows - guessed repo-root-relative (PROJECT_DIR
-          # prefix) to match compile-commands, since both are consumed by
-          # the same cfamily analyzer rather than a separate sensor like
-          # coverage. If this run's log shows a file-not-found for
-          # clang-tidy-sonar.json, that error will state the exact path it
-          # looked for - fix by toggling the prefix based on that, the same
-          # way v5 and v6 were each fixed from a real failure log rather
-          # than guessed twice.
+          # sonar.externalIssuesReportPaths: CONFIRMED (v9, real CI run,
+          # not guessed) to follow coverageReportPaths' convention, NOT
+          # compile-commands' - resolves relative to projectBaseDir
+          # (already PROJECT_DIR). The first attempt guessed the opposite
+          # (PROJECT_DIR-prefixed) and failed with the exact same "doubled
+          # path" shape as the v6 coverage bug:
+          #   NoSuchFileException: .../CNR-Motor-Driver-1.0/
+          #   CNR-Motor-Driver-1.0/clang-tidy-sonar.json
+          # Must be passed WITHOUT the prefix, same as coverageReportPaths.
           #
           # sonar.coverage.exclusions uses the same **/<filename> glob style
           # as sonar.exclusions in sonar-project.properties, so it's
@@ -279,7 +279,7 @@ jobs:
             --define "sonar.cfamily.compile-commands=${{ env.PROJECT_DIR }}/${{ env.BUILD_WRAPPER_OUT_DIR }}/compile_commands.json"
             --define "sonar.coverageReportPaths=${{ env.COVERAGE_REPORT }}"
             --define "sonar.coverage.exclusions=${{ steps.covexcl.outputs.exclusions }}"
-            --define "sonar.externalIssuesReportPaths=${{ env.PROJECT_DIR }}/${{ env.CLANG_TIDY_REPORT }}"
+            --define "sonar.externalIssuesReportPaths=${{ env.CLANG_TIDY_REPORT }}"
 
       # Optional: fail the pipeline if quality gate fails, once you're ready
       # to enforce it. Requires sonar.qualitygate.wait=true.
