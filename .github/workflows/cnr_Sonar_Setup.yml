@@ -1,7 +1,24 @@
-# ─── cnr_Sonar_Setup.yml (v14) ──────────────────────────────────────────────
+# ─── cnr_Sonar_Setup.yml (v15) ──────────────────────────────────────────────
 # Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
 #           SonarQube Cloud static analysis.
 # Date    : 19-08-2026
+#
+# CHANGE FROM v14: user explicitly clarified unit_tests/test is for unit
+# tests only, and asked for clang-tidy to analyze the whole Src/ and Inc/
+# tree, not just motor_telemetry_math.c. This intentionally now includes
+# ST's vendor MCSDK files (47 of 58 files) even though CodeDesignRules.md
+# Rule 1 marks them immutable/do-not-hand-edit - that rule is about
+# editing, not about static analysis, and SonarQube's own native cfamily
+# analyzer already reports on this same vendor code today. Expect a real
+# jump in reported findings. Implemented as two clang-tidy invocations
+# (two different compile databases, neither covers everything - see the
+# "Run clang-tidy" step below for the full reasoning), then merged before
+# conversion. UNVERIFIED until run on real CI - the ARM database's compile
+# commands invoke arm-none-eabi-gcc with ARM target flags; clang (which
+# clang-tidy is built on) does support ARM as a genuine cross-compile
+# target, but GCC-specific builtins/attributes in vendor code are not
+# guaranteed to parse cleanly. continue-on-error is already set for
+# exactly this reason.
 #
 # CHANGE FROM v13: clang-tidy-sonar.json (and the raw clang-tidy-output.txt
 # it's built from) was never persisted anywhere - it only existed
@@ -278,55 +295,82 @@ jobs:
             --out-dir ${{ env.BUILD_WRAPPER_OUT_DIR }} \
             cmake --build --preset Debug
 
-      # Added v9, FIXED v12: clang-tidy against ONLY the fully-custom
-      # file(s) this project owns (same CUSTOM_FILES scope as the
-      # coverage-exclusions step above) - running it over the vendor MCSDK
-      # tree would flood this with findings about code we're not supposed
-      # to touch anyway (see codeRules/CodeDesignRules.md Rule 1, vendor
-      # files immutable).
+      # Added v9, FIXED v12, BROADENED v15.
       #
-      # v9 pointed -p at the ARM build-wrapper's output
-      # (build-wrapper-output) and failed: "No compilation database found
-      # ... or any parent directory" -> motor_telemetry_math.c is
-      # host-only (see unit_tests/CMakeLists.txt's own header) and is
-      # NEVER compiled as part of the ARM firmware build that build-wrapper
-      # wraps, so it can never have an entry there regardless of path.
-      # Fixed by pointing -p at unit_tests/build instead - the host build
-      # a few steps above (added for coverage) actually compiles this
-      # file, and now emits compile_commands.json too (added
-      # CMAKE_EXPORT_COMPILE_COMMANDS ON to unit_tests/CMakeLists.txt).
-      # This is also architecturally more correct, not just a workaround:
-      # clang-tidy is clang-based and would likely misinterpret
-      # arm-none-eabi-gcc-specific flags/builtins even if the file WERE in
-      # that database.
+      # v9/v12 history: motor_telemetry_math.c is host-only (see
+      # unit_tests/CMakeLists.txt's own header) and is NEVER compiled as
+      # part of the ARM firmware build that build-wrapper wraps, so -p
+      # build-wrapper-output failed with "No compilation database found"
+      # for it. Fixed by pointing -p at unit_tests/build instead (the host
+      # build a few steps above, which actually compiles this file, and
+      # now emits compile_commands.json via CMAKE_EXPORT_COMPILE_COMMANDS
+      # ON in unit_tests/CMakeLists.txt).
       #
-      # continue-on-error: this is a first run against real output for
-      # both clang-tidy itself and the converter script - report-only
-      # until proven reliable, same posture as the code-review job in
-      # cnr_review_test_coverage.yml when its own new rules first shipped.
+      # v15: broadened from motor_telemetry_math.c only to the whole Src/
+      # tree, per explicit user request ("unit_tests/test is for unit
+      # tests only, analyze whole files in Src/ and Inc/"). This
+      # supersedes the earlier scoping rationale (CodeDesignRules.md Rule
+      # 1, vendor files immutable) for ANALYSIS purposes specifically -
+      # that rule is about not hand-editing vendor code, not about
+      # excluding it from static analysis, and SonarQube's own native
+      # cfamily analyzer already reports on this same vendor code today.
       #
-      # Added explicit -checks= (run #30 succeeded but reported "Converted
-      # 0 issue(s)" - with no .clang-tidy config or -checks flag in this
-      # repo, that could mean the code is clean OR that clang-tidy's bare
-      # default check set is too minimal to say anything meaningful either
-      # way). Builds an explicit allowlist rather than trusting the
-      # default: "-*" disables everything, then re-enables real bug-finding
-      # categories (bugprone-, cert-, clang-analyzer-, misc-, performance-)
-      # plus the one specific readability check this project actually
-      # wants (const-correctness on pointer params). Deliberately excludes
-      # broad readability-*/modernize-* - modernize-* is almost entirely
-      # C++-oriented (irrelevant to this .c file) and broad readability-*
-      # is subjective/stylistic and would conflict with the naming
-      # conventions code_quality_checker.py already enforces for this repo.
-      - name: Run clang-tidy (custom files only) and convert to Sonar format
+      # Two separate invocations, because two separate compile databases
+      # exist and neither one covers everything on its own:
+      #   1. build-wrapper-output - the ARM cross-build's own database.
+      #      Covers every Src/*.c file EXCEPT motor_telemetry_math.c (see
+      #      v9/v12 history above - it has no entry here regardless of
+      #      path). UNVERIFIED RISK: these compile commands invoke
+      #      arm-none-eabi-gcc with ARM target flags (-mcpu=cortex-m4
+      #      -mfpu=... etc.). clang (which clang-tidy is built on) does
+      #      support ARM as a genuine cross-compile target - unlike GCC, a
+      #      single clang binary targets many architectures - but
+      #      GCC-specific builtins/attributes some vendor files may use
+      #      are not guaranteed to parse cleanly. continue-on-error is
+      #      already set on this step for exactly this reason; check the
+      #      raw output artifact below before trusting this blindly on
+      #      the first real run.
+      #   2. unit_tests/build - unchanged from v12, still the only
+      #      database with an entry for motor_telemetry_math.c.
+      # Outputs are concatenated before conversion so both feed the same
+      # Sonar report.
+      #
+      # --header-filter='.*/Inc/.*' - by default clang-tidy only reports
+      # diagnostics found in the exact file(s) passed on the command line,
+      # not in headers they #include. This filter makes findings that
+      # originate inside this project's own Inc/ headers surface too
+      # (system/toolchain headers outside Inc/ stay suppressed).
+      #
+      # continue-on-error: still report-only until this broadened scope is
+      # proven reliable on real CI - same posture as when clang-tidy was
+      # first added in v9.
+      #
+      # -checks= unchanged from v13 (see that changelog entry above for
+      # the reasoning behind this specific allowlist).
+      - name: Run clang-tidy (whole Src/ and Inc/ tree) and convert to Sonar format
         working-directory: ${{ env.PROJECT_DIR }}
         continue-on-error: true
         run: |
+          CHECKS='-*,bugprone-*,cert-*,clang-analyzer-*,misc-*,performance-*,readability-non-const-parameter'
+
+          echo "=== clang-tidy: all Src/*.c files (except motor_telemetry_math.c) via the ARM build database ==="
+          ARM_FILES=$(find Src -maxdepth 1 -name '*.c' ! -name 'motor_telemetry_math.c' | sort)
+          echo "$ARM_FILES"
+          clang-tidy -p ${{ env.BUILD_WRAPPER_OUT_DIR }} \
+            -checks="$CHECKS" \
+            --header-filter='.*/Inc/.*' \
+            $ARM_FILES \
+            > clang-tidy-output-arm.txt 2>&1 || true
+          cat clang-tidy-output-arm.txt
+
+          echo "=== clang-tidy: motor_telemetry_math.c via the host build database ==="
           clang-tidy -p unit_tests/build \
-            -checks='-*,bugprone-*,cert-*,clang-analyzer-*,misc-*,performance-*,readability-non-const-parameter' \
+            -checks="$CHECKS" \
             Src/motor_telemetry_math.c \
-            > clang-tidy-output.txt 2>&1 || true
-          cat clang-tidy-output.txt
+            > clang-tidy-output-host.txt 2>&1 || true
+          cat clang-tidy-output-host.txt
+
+          cat clang-tidy-output-arm.txt clang-tidy-output-host.txt > clang-tidy-output.txt
           python3 codeRules/tools/convert_clang_tidy_to_sonar.py \
             < clang-tidy-output.txt > ${{ env.CLANG_TIDY_REPORT }}
           echo "------------------------------------------"
@@ -340,6 +384,11 @@ jobs:
       # vanished when the runner was torn down. Uploading both the raw
       # clang-tidy text output and the converted JSON so they can actually
       # be downloaded and inspected after a run, not just read from the log.
+      #
+      # v15: also uploads the two pre-merge raw outputs (arm/host)
+      # separately - needed to tell which of the two compile databases a
+      # given finding (or a silent failure) actually came from, while the
+      # broadened ARM-database invocation is still unverified on real CI.
       - name: Upload clang-tidy report (raw + converted JSON)
         if: always()
         uses: actions/upload-artifact@v7
@@ -347,6 +396,8 @@ jobs:
           name: clang-tidy-sonar-report
           path: |
             ${{ env.PROJECT_DIR }}/clang-tidy-output.txt
+            ${{ env.PROJECT_DIR }}/clang-tidy-output-arm.txt
+            ${{ env.PROJECT_DIR }}/clang-tidy-output-host.txt
             ${{ env.PROJECT_DIR }}/${{ env.CLANG_TIDY_REPORT }}
           retention-days: 30
 
