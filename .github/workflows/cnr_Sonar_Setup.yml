@@ -1,7 +1,15 @@
-# ─── cnr_Sonar_Setup.yml (v13) ──────────────────────────────────────────────
+# ─── cnr_Sonar_Setup.yml (v14) ──────────────────────────────────────────────
 # Purpose : Build CNR-Motor-Driver-1.0 (STM32G431, CMake/Ninja) and run
 #           SonarQube Cloud static analysis.
 # Date    : 19-08-2026
+#
+# CHANGE FROM v13: clang-tidy-sonar.json (and the raw clang-tidy-output.txt
+# it's built from) was never persisted anywhere - it only existed
+# transiently on the runner during the job, then vanished. Added an
+# upload-artifact step for both files, plus a `cat` of the JSON to the log
+# itself, so the actual content passed to sonar.externalIssuesReportPaths
+# can be inspected directly, not just inferred from the "Converted N
+# issue(s)" summary line.
 #
 # CHANGE FROM v12: run #30 succeeded with the fixed compilation database,
 # but reported "Converted 0 issue(s), 0 distinct rule(s)." Verified via the
@@ -321,6 +329,26 @@ jobs:
           cat clang-tidy-output.txt
           python3 codeRules/tools/convert_clang_tidy_to_sonar.py \
             < clang-tidy-output.txt > ${{ env.CLANG_TIDY_REPORT }}
+          echo "------------------------------------------"
+          echo "Generated ${{ env.CLANG_TIDY_REPORT }} (this is what gets passed to"
+          echo "sonar.externalIssuesReportPaths in the SonarQube Scan step below):"
+          echo "------------------------------------------"
+          cat ${{ env.CLANG_TIDY_REPORT }}
+
+      # Added 19-08-2026: this file was never persisted anywhere before -
+      # it only existed transiently on the runner during this one job, then
+      # vanished when the runner was torn down. Uploading both the raw
+      # clang-tidy text output and the converted JSON so they can actually
+      # be downloaded and inspected after a run, not just read from the log.
+      - name: Upload clang-tidy report (raw + converted JSON)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: clang-tidy-sonar-report
+          path: |
+            ${{ env.PROJECT_DIR }}/clang-tidy-output.txt
+            ${{ env.PROJECT_DIR }}/${{ env.CLANG_TIDY_REPORT }}
+          retention-days: 30
 
       - name: SonarQube Scan
         uses: SonarSource/sonarqube-scan-action@v8.2.0
