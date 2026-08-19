@@ -1,10 +1,17 @@
-# ─── cnr_review_test_coverage.yml (v3) ──────────────────────────────────────
+# ─── cnr_review_test_coverage.yml (v4) ──────────────────────────────────────
 # Purpose : Two independent CI jobs for CNR-Motor-Driver-1.0:
 #             1. code-review        - deterministic rule checker
 #                                      (codeRules/tools/code_quality_checker.py)
 #             2. unit-tests-coverage - host-build Unity tests + gcov/gcovr
 #                                      coverage report
 # Date    : 19-08-2026
+#
+# CHANGE FROM v3: bumped actions/upload-artifact v4 -> v7 in both upload
+# steps - same Node.js 20 deprecation warning as setup-python (v1 fix
+# below), this time from upload-artifact's own manifest. Confirmed v7
+# targets node24 and has no breaking input/output changes for basic
+# name/path usage (checked v5/v6/v7 release notes - the only breaking
+# change across all three is the Node runtime itself).
 #
 # CHANGE FROM v2: this job's own "Install build tools" step hit the same
 # azure.archive.ubuntu.com apt-mirror hang diagnosed and fixed in
@@ -101,7 +108,7 @@ jobs:
 
       - name: Upload code quality report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: code-quality-report
           path: |
@@ -212,7 +219,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: unit-test-coverage-report
           path: ${{ env.PROJECT_DIR }}/unit_tests/build/coverage/

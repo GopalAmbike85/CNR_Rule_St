@@ -1,7 +1,12 @@
-# ─── cnr_manual_tag_build.yml (v1) ──────────────────────────────────────────
+# ─── cnr_manual_tag_build.yml (v2) ──────────────────────────────────────────
 # Purpose : On-demand, version-tagged build of CNR-Motor-Driver-1.0, producing
 #           a downloadable .elf/.bin/.hex artifact named after the branch+SHA.
-# Date    : 16-08-2026
+# Date    : 19-08-2026
+#
+# CHANGE FROM v1: bumped actions/upload-artifact v4 -> v7 - v4's manifest
+# targets Node.js 20, which GitHub is deprecating (already force-runs on
+# Node 24, hence a warning not a failure). v7 targets node24 natively;
+# confirmed no breaking input/output changes for basic name/path usage.
 #
 # This is a deliberately lightweight replacement for the reference
 # ManualBuild-Tag.yml (which targets a different project entirely: i.MXRT1050
@@ -82,7 +87,7 @@ jobs:
 
       - name: Upload tagged build artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: CNR-Motor-Driver-${{ inputs.build_preset }}-${{ env.GIT_VER }}
           path: |
