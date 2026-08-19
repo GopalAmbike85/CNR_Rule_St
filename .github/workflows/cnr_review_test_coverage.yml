@@ -1,10 +1,22 @@
-# ─── cnr_review_test_coverage.yml (v1) ──────────────────────────────────────
+# ─── cnr_review_test_coverage.yml (v3) ──────────────────────────────────────
 # Purpose : Two independent CI jobs for CNR-Motor-Driver-1.0:
 #             1. code-review        - deterministic rule checker
 #                                      (codeRules/tools/code_quality_checker.py)
 #             2. unit-tests-coverage - host-build Unity tests + gcov/gcovr
 #                                      coverage report
-# Date    : 12-08-2026
+# Date    : 19-08-2026
+#
+# CHANGE FROM v2: this job's own "Install build tools" step hit the same
+# azure.archive.ubuntu.com apt-mirror hang diagnosed and fixed in
+# cnr_Sonar_Setup.yml (v11) - confirmed by this job sitting well past its
+# usual ~35-40s runtime. Applied the identical fix here: rewrite
+# /etc/apt/apt-mirrors.txt to skip the flaky regional mirror, plus explicit
+# Acquire::Retries/Timeout flags and DEBIAN_FRONTEND=noninteractive.
+#
+# CHANGE FROM v1: bumped actions/setup-python v5 -> v7 in both jobs (v5's
+# manifest targets Node.js 20, which GitHub is deprecating; v6+ already
+# targets Node 24 natively, confirmed no breaking input/output changes for
+# this file's python-version-only usage).
 #
 # Scope: this workflow does NOT touch the existing ARM cross-build / SonarQube
 # workflow (cnr_Sonar_Setup.yml). It is self-contained: code review runs
@@ -119,10 +131,23 @@ jobs:
       # major versions (e.g. --object-directory / --sonarqube / --html-details
       # were verified against gcovr 8.6 specifically) and Ubuntu's apt
       # package version is not something this workflow controls.
+      #
+      # Added 19-08-2026: same apt-mirror hang fix as cnr_Sonar_Setup.yml
+      # (v11) - this job's own separate "apt-get update" hit the identical
+      # azure.archive.ubuntu.com flakiness (confirmed: this job was still
+      # "In progress" long after its usual ~35-40s runtime). Rewrites
+      # /etc/apt/apt-mirrors.txt to skip straight to the public archive,
+      # plus explicit retry/timeout flags and DEBIAN_FRONTEND=noninteractive.
       - name: Install build tools (CMake, Ninja, gcovr)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build
+          echo "http://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt
+          sudo apt-get update \
+            -o Acquire::Retries=3 \
+            -o Acquire::http::Timeout=15 \
+            -o Acquire::https::Timeout=15
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
+            -o Acquire::Retries=3 \
+            cmake ninja-build
           pip install gcovr==8.6
 
       - name: Configure unit tests (host build, fetches Unity)
