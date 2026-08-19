@@ -49,7 +49,7 @@ jobs:
           fetch-depth: 0   # full history needed for the git-diff-based rules (CD-1/CD-3/CD-5)
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
@@ -110,7 +110,7 @@ jobs:
       # plain "pip install" below works without hitting Ubuntu 24.04's
       # externally-managed-environment restriction on the system Python.
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 

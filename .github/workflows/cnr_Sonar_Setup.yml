@@ -176,7 +176,7 @@ jobs:
       # here since that job runs in a separate workflow/runner and its
       # output can't be reached from this one.
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.x'
 
